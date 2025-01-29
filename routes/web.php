@@ -12,5 +12,5 @@ Route::post('/documents', [DocumentController::class, 'store'])->name('documents
 Route::post('/documents/{id}/send-otp', [DocumentController::class, 'sendOTP'])->name('documents.sendOTP');
 Route::post('/documents/{id}/validate-otp', [DocumentController::class, 'validateOTP'])->name('documents.validateOTP');
 Route::post('/documents/{id}/sign-with-session', [DocumentController::class, 'signWithSession']);
-Route::get('/documents/{orderId}/download', [DocumentController::class, 'downloadSignedDocument']);
+Route::get('/documents/{orderId}/download', [DocumentController::class, 'download'])->name('documents.download');
 Route::post('/documents/{id}/send', [DocumentController::class, 'sendToPeruri'])->name('documents.send');

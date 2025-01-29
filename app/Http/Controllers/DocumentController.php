@@ -178,28 +178,44 @@ class DocumentController extends Controller
         }
     }
 
-    public function download($id)
+    public function download($orderId)
     {
-        $document = TrackingDokumenTtd::findOrFail($id);
-        
         try {
-            $response = $this->peruriService->downloadDocument($document->order_id);
-            
-            // Jika response mengandung base64 document
-            if (isset($response['base64Document'])) {
-                $pdf_content = base64_decode($response['base64Document']);
-                $filename = $document->nama_dokumen . '_signed.pdf';
-                
-                return response($pdf_content)
-                    ->header('Content-Type', 'application/pdf')
-                    ->header('Content-Disposition', 'attachment; filename="' . $filename . '"');
+            // Cek dokumen di database
+            $document = DB::table('tracking_dokumen_ttd')
+                ->where('order_id', $orderId)
+                ->first();
+
+            if (!$document) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Dokumen tidak ditemukan'
+                ], 404);
             }
 
-            return redirect()->route('documents.index')
-                ->with('error', 'Gagal mengunduh dokumen');
+            // Download dari Peruri
+            $response = $this->peruriService->downloadDocument($orderId);
+            
+            if (!isset($response['data']['base64Document'])) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Gagal mengunduh dokumen'
+                ], 500);
+            }
+
+            // Decode dan return PDF
+            $pdfContent = base64_decode($response['data']['base64Document']);
+            $fileName = pathinfo($document->nama_dokumen, PATHINFO_FILENAME) . '_signed.pdf';
+
+            return response($pdfContent)
+                ->header('Content-Type', 'application/pdf')
+                ->header('Content-Disposition', 'attachment; filename="' . $fileName . '"');
+
         } catch (\Exception $e) {
-            return redirect()->route('documents.index')
-                ->with('error', 'Terjadi kesalahan: ' . $e->getMessage());
+            return response()->json([
+                'success' => false,
+                'message' => 'Error: ' . $e->getMessage()
+            ], 500);
         }
     }
 
@@ -348,31 +364,6 @@ class DocumentController extends Controller
                 'success' => false,
                 'message' => 'Error: ' . $e->getMessage()
             ]);
-        }
-    }
-
-    public function downloadSignedDocument($orderId)
-    {
-        try {
-            $base64Document = $this->peruriService->downloadDocument($orderId);
-            
-            // Ambil nama dokumen dari database
-            $document = DB::table('tracking_dokumen_ttd')
-                ->where('order_id', $orderId)
-                ->first();
-                
-            $fileName = $document ? $document->nama_dokumen : "signed-{$orderId}.pdf";
-
-            // Return file untuk didownload
-            return response(base64_decode($base64Document))
-                ->header('Content-Type', 'application/pdf')
-                ->header('Content-Disposition', 'attachment; filename="' . $fileName . '"');
-
-        } catch (\Exception $e) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Gagal mengunduh dokumen: ' . $e->getMessage()
-            ], 500);
         }
     }
 

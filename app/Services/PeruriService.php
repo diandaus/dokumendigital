@@ -333,24 +333,14 @@ class PeruriService
                 throw new \Exception('Gagal mengunduh dokumen: ' . $response->body());
             }
 
-            $data = $response->json();
-
-            if (isset($data['resultCode']) && $data['resultCode'] === '0') {
-                // Jika response berhasil, return base64 dokumen
-                if (isset($data['data']['base64Document'])) {
-                    return $data['data']['base64Document'];
-                }
-                throw new \Exception('Base64 document not found in response');
-            }
-
-            throw new \Exception('Invalid download document response: ' . json_encode($data));
+            return $response->json();
 
         } catch (\Exception $e) {
             Log::error('Error in downloadDocument:', [
                 'message' => $e->getMessage(),
                 'orderId' => $orderId
             ]);
-            throw new \Exception('Error memanggil Download Document API: ' . $e->getMessage());
+            throw $e;
         }
     }
 }

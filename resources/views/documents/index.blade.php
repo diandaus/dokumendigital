@@ -347,17 +347,32 @@
                 }
             });
 
-            // Buat hidden iframe untuk download
-            const iframe = document.createElement('iframe');
-            iframe.style.display = 'none';
-            iframe.src = `/documents/${orderId}/download`;
-            document.body.appendChild(iframe);
-
-            // Tunggu sebentar lalu hilangkan loading
-            setTimeout(() => {
+            // Gunakan endpoint download yang benar
+            fetch(`/documents/${orderId}/download`, {
+                method: 'GET',
+                headers: {
+                    'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').content
+                }
+            })
+            .then(response => response.blob())
+            .then(blob => {
+                // Buat URL untuk blob
+                const url = window.URL.createObjectURL(blob);
+                // Buat link untuk download
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `document-${orderId}_signed.pdf`;
+                document.body.appendChild(a);
+                a.click();
+                // Cleanup
+                window.URL.revokeObjectURL(url);
+                document.body.removeChild(a);
                 Swal.close();
-                document.body.removeChild(iframe);
-            }, 2000);
+            })
+            .catch(error => {
+                console.error('Error:', error);
+                Swal.fire('Error', 'Gagal mengunduh dokumen', 'error');
+            });
         }
 
         // Tambahkan script untuk preview file yang dipilih
