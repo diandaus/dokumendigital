@@ -20,69 +20,118 @@ class PeruriService
 
     protected function getJwtToken()
     {
-        // Cek apakah token sudah ada di cache
         if (Cache::has('peruri_jwt_token')) {
             return Cache::get('peruri_jwt_token');
         }
 
-        $response = Http::withHeaders([
-            'x-Gateway-APIKey' => $this->apiKey,
-            'Content-Type' => 'application/json'
-        ])->post($this->baseUrl . '/jwt/1.0/getJsonWebToken/v1', [
-            'param' => [
+        try {
+            $baseUrl = rtrim($this->baseUrl, '/');
+            $endpoint = $baseUrl . '/jwtSandbox/1.0/getJsonWebToken/v1';
+            
+            \Log::info('JWT Request:', [
+                'endpoint' => $endpoint,
                 'systemId' => $this->systemId
-            ]
-        ]);
+            ]);
 
-        $token = $response->json()['token'] ?? null;
+            $response = Http::withHeaders([
+                'Content-Type' => 'application/json',
+                'x-Gateway-APIKey' => $this->apiKey
+            ])->post($endpoint, [
+                'param' => [
+                    'systemId' => $this->systemId
+                ]
+            ]);
 
-        // Simpan token di cache (misalnya untuk 55 menit)
-        if ($token) {
+            if (!$response->successful()) {
+                throw new \Exception('Failed to get JWT: ' . $response->body());
+            }
+
+            $data = $response->json();
+            
+            if (!isset($data['data']['jwt'])) {
+                throw new \Exception('JWT token not found in response');
+            }
+
+            \Log::info('JWT Token Generated', [
+                'token_preview' => substr($data['data']['jwt'], 0, 30) . '...'
+            ]);
+
+            $token = $data['data']['jwt'];
             Cache::put('peruri_jwt_token', $token, now()->addMinutes(55));
+            
+            return $token;
+            
+        } catch (\Exception $e) {
+            \Log::error('JWT Generation Error', [
+                'message' => $e->getMessage(),
+                'system_id' => $this->systemId,
+                'endpoint' => $endpoint ?? null
+            ]);
+            throw new \Exception('JWT Error: ' . $e->getMessage());
         }
-
-        return $token;
     }
 
     public function uploadDocument($file, $email, $signaturePosition)
     {
-        $token = $this->getJwtToken();
+        try {
+            $token = $this->getJwtToken();
+            if (!$token) {
+                throw new \Exception('Gagal mendapatkan JWT token');
+            }
 
-        // Baca file dan convert ke base64
-        $base64Document = base64_encode(file_get_contents($file->path()));
-        
-        $payload = [
-            'param' => [
-                'email' => $email,
-                'payload' => [
-                    'fileName' => $file->getClientOriginalName(),
-                    'base64Document' => $base64Document,
-                    'signer' => [
-                        [
-                            'isVisualSign' => 'YES',
-                            'lowerLeftX' => $signaturePosition['lowerLeftX'] ?? '86',
-                            'lowerLeftY' => $signaturePosition['lowerLeftY'] ?? '88',
-                            'upperRightX' => $signaturePosition['upperRightX'] ?? '145',
-                            'upperRightY' => $signaturePosition['upperRightY'] ?? '136',
-                            'page' => $signaturePosition['page'] ?? '1',
-                            'certificateLevel' => 'NOT_CERTIFIED',
-                            'varLocation' => 'Jakarta',
-                            'varReason' => 'Signed'
+            $url = rtrim($this->baseUrl, '/') . '/digitalSignatureSession/1.0/sendDocument/v1';
+            
+            $base64Document = base64_encode(file_get_contents($file->path()));
+            
+            $payload = [
+                'param' => [
+                    'email' => $email,
+                    'payload' => [
+                        'fileName' => $file->getClientOriginalName(),
+                        'base64Document' => $base64Document,
+                        'signer' => [
+                            [
+                                'email' => $email,
+                                'isVisualSign' => 'YES',
+                                'lowerLeftX' => '556',
+                                'lowerLeftY' => '6',
+                                'upperRightX' => '589',
+                                'upperRightY' => '40',
+                                'page' => '1',
+                                'certificateLevel' => 'NOT_CERTIFIED',
+                                'varLocation' => 'Sigli',
+                                'varReason' => 'Signed',
+                                'teraImage' => 'QR-DETECSI'
+                            ]
                         ]
-                    ]
-                ],
-                'systemId' => $this->systemId,
-                'orderType' => 'INDIVIDUAL'
-            ]
-        ];
+                    ],
+                    'systemId' => $this->systemId,
+                    'orderType' => 'INDIVIDUAL'
+                ]
+            ];
 
-        $response = Http::withHeaders([
-            'x-Gateway-APIKey' => $this->apiKey,
-            'Authorization' => 'Bearer ' . $token,
-            'Content-Type' => 'application/json'
-        ])->post($this->baseUrl . '/digitalSignatureSession/1.0/sendDocument/v1', $payload);
+            $response = Http::withHeaders([
+                'x-Gateway-APIKey' => $this->apiKey,
+                'Authorization' => 'Bearer ' . $token,
+                'Content-Type' => 'application/json'
+            ])->post($url, $payload);
 
-        return $response->json();
+            $responseData = $response->json();
+            \Log::info('Upload Document Response:', $responseData);
+
+            if ($responseData['resultCode'] === 'SB001') {
+                throw new \Exception('Email ' . $email . ' belum terdaftar di Peruri. Silahkan daftarkan email terlebih dahulu.');
+            }
+
+            if (!isset($responseData['documentId'])) {
+                throw new \Exception('Gagal mendapatkan documentId dari Peruri: ' . ($responseData['resultDesc'] ?? 'Unknown error'));
+            }
+
+            return $responseData;
+        } catch (\Exception $e) {
+            \Log::error('Error dalam PeruriService::uploadDocument: ' . $e->getMessage());
+            throw $e;
+        }
     }
 
     public function signDocument($documentId)

@@ -46,7 +46,9 @@
                 <select name="pegawai_id" class="form-control select2" required>
                     <option value="">-- Pilih Dokter/Pegawai --</option>
                     @foreach($pegawai as $p)
-                        <option value="{{ $p->id }}">{{ $p->nama }} - {{ $p->email }}</option>
+                        <option value="{{ $p->id }}" {{ $selectedPegawaiId == $p->id ? 'selected' : '' }}>
+                            {{ $p->nama }} - {{ $p->email }}
+                        </option>
                     @endforeach
                 </select>
             </div>

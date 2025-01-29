@@ -22,24 +22,37 @@ class DocumentController extends Controller
     {
         $documents = TrackingDokumenTtd::orderBy('tgl_kirim', 'desc')->get();
         $pegawai = Pegawai::all();
-        return view('documents.index', compact('documents', 'pegawai'));
+        $selectedPegawaiId = session('selected_pegawai_id');
+        return view('documents.index', compact('documents', 'pegawai', 'selectedPegawaiId'));
     }
 
     public function store(Request $request)
     {
         try {
             $request->validate([
-                'document' => 'required|file|mimes:pdf|max:10240', // max 10MB
+                'document' => 'required|file|mimes:pdf|max:10240',
                 'pegawai_id' => 'required|exists:pegawai,id'
             ]);
 
+            // Simpan pegawai_id ke session
+            session(['selected_pegawai_id' => $request->pegawai_id]);
+
+            // Mengambil data pegawai berdasarkan ID
             $pegawai = Pegawai::findOrFail($request->pegawai_id);
+            
+            // Email diambil dari data pegawai
+            $email = $pegawai->email;
+
+            // Tambahkan logging untuk debugging
+            \Log::info('Mulai proses upload dokumen');
+            \Log::info('Request data:', $request->all());
+
             $file = $request->file('document');
             
-            // Ambil nama file tanpa ekstensi
             $fileName = pathinfo($file->getClientOriginalName(), PATHINFO_FILENAME);
-            
             $path = $file->store('documents');
+
+            \Log::info('File berhasil disimpan di: ' . $path);
 
             $signaturePosition = [
                 'lowerLeftX' => '86',
@@ -49,18 +62,29 @@ class DocumentController extends Controller
                 'page' => '1'
             ];
 
-            // Upload ke Peruri
-            $peruriResponse = $this->peruriService->uploadDocument(
-                $file,
-                $pegawai->email,
-                $signaturePosition
-            );
+            // Upload ke Peruri dengan try-catch terpisah
+            try {
+                $peruriResponse = $this->peruriService->uploadDocument(
+                    $file,
+                    $pegawai->email,
+                    $signaturePosition
+                );
 
-            // Simpan ke tracking_dokumen_ttd
+                \Log::info('Respons dari Peruri:', $peruriResponse);
+
+                if (!isset($peruriResponse['documentId'])) {
+                    throw new \Exception('Gagal mendapatkan documentId dari Peruri');
+                }
+            } catch (\Exception $e) {
+                \Log::error('Error saat upload ke Peruri: ' . $e->getMessage());
+                throw $e;
+            }
+
+            // Simpan ke database
             TrackingDokumenTtd::create([
                 'nama_dokumen' => $fileName,
                 'tgl_kirim' => now(),
-                'order_id' => $peruriResponse['documentId'] ?? null,
+                'order_id' => $peruriResponse['documentId'],
                 'status_ttd' => 'Proses',
                 'keterangan' => 'Dokumen telah dikirim ke Peruri',
                 'user_pengirim' => Auth::user()->username ?? 'system',
@@ -73,10 +97,11 @@ class DocumentController extends Controller
             ]);
 
         } catch (\Exception $e) {
+            \Log::error('Error dalam proses store: ' . $e->getMessage());
             return response()->json([
                 'success' => false,
                 'message' => 'Error: ' . $e->getMessage()
-            ]);
+            ], 500);
         }
     }
 
