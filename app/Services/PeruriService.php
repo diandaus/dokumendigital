@@ -4,6 +4,7 @@ namespace App\Services;
 
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\Log;
 
 class PeruriService
 {
@@ -18,28 +19,95 @@ class PeruriService
         $this->systemId = config('services.peruri.system_id');
     }
 
-    protected function getJwtToken()
+    public function sendDocument($email, $fileName, $base64Document)
     {
-        if (Cache::has('peruri_jwt_token')) {
-            return Cache::get('peruri_jwt_token');
-        }
-
         try {
-            $baseUrl = rtrim($this->baseUrl, '/');
-            $endpoint = $baseUrl . '/jwtSandbox/1.0/getJsonWebToken/v1';
-            
-            \Log::info('JWT Request:', [
-                'endpoint' => $endpoint,
-                'systemId' => $this->systemId
+            // Get JWT Token first
+            $jwtToken = $this->getJwtToken();
+
+            $url = $this->baseUrl . '/digitalSignatureSession/1.0/sendDocument/v1';
+
+            // Setup signer configuration
+            $signer = [
+                "isVisualSign" => "YES",
+                "lowerLeftX" => "567",
+                "lowerLeftY" => "0",
+                "upperRightX" => "612",
+                "upperRightY" => "44",
+                "page" => "1",
+                "certificateLevel" => "NOT_CERTIFIED",
+                "varLocation" => "Sigli",
+                "varReason" => "Signed",
+                "teraImage" => "QR-DETECSI"
+            ];
+
+            // Setup request body
+            $requestBody = [
+                "param" => [
+                    "email" => $email,
+                    "payload" => [
+                        "fileName" => $fileName,
+                        "base64Document" => $base64Document,
+                        "signer" => [$signer]
+                    ],
+                    "systemId" => $this->systemId,
+                    "orderType" => "INDIVIDUAL"
+                ]
+            ];
+
+            Log::info('Sending document to Peruri', [
+                'email' => $email,
+                'fileName' => $fileName
             ]);
 
             $response = Http::withHeaders([
-                'Content-Type' => 'application/json',
-                'x-Gateway-APIKey' => $this->apiKey
-            ])->post($endpoint, [
+                'x-Gateway-APIKey' => $this->apiKey,
+                'Authorization' => 'Bearer ' . $jwtToken,
+                'Content-Type' => 'application/json'
+            ])->post($url, $requestBody);
+
+            Log::info('Peruri Send Document Response:', [
+                'status' => $response->status(),
+                'body' => $response->json()
+            ]);
+
+            if (!$response->successful()) {
+                throw new \Exception('Failed to send document: ' . $response->body());
+            }
+
+            return $response->json();
+
+        } catch (\Exception $e) {
+            Log::error('Error in sendDocument:', [
+                'message' => $e->getMessage(),
+                'email' => $email,
+                'fileName' => $fileName
+            ]);
+            throw $e;
+        }
+    }
+
+    protected function getJwtToken()
+    {
+        try {
+            Log::info('Requesting new JWT token');
+            
+            $url = $this->baseUrl . '/jwt/1.0/getJsonWebToken/v1';
+            
+            $response = Http::withHeaders([
+                'x-Gateway-APIKey' => $this->apiKey,
+                'Content-Type' => 'application/json'
+            ])->post($url, [
                 'param' => [
                     'systemId' => $this->systemId
                 ]
+            ]);
+
+            Log::info('JWT Full Response:', [
+                'status' => $response->status(),
+                'body' => $response->json(),
+                'url' => $url,
+                'systemId' => $this->systemId
             ]);
 
             if (!$response->successful()) {
@@ -48,178 +116,243 @@ class PeruriService
 
             $data = $response->json();
             
-            if (!isset($data['data']['jwt'])) {
-                throw new \Exception('JWT token not found in response');
+            if (isset($data['resultCode']) && $data['resultCode'] === '0' && isset($data['data']['jwt'])) {
+                Log::info('New JWT token generated');
+                return $data['data']['jwt'];
             }
 
-            \Log::info('JWT Token Generated', [
-                'token_preview' => substr($data['data']['jwt'], 0, 30) . '...'
-            ]);
+            throw new \Exception('Invalid JWT response format: ' . json_encode($data));
 
-            $token = $data['data']['jwt'];
-            Cache::put('peruri_jwt_token', $token, now()->addMinutes(55));
-            
-            return $token;
-            
         } catch (\Exception $e) {
-            \Log::error('JWT Generation Error', [
+            Log::error('JWT Generation Error', [
                 'message' => $e->getMessage(),
-                'system_id' => $this->systemId,
-                'endpoint' => $endpoint ?? null
+                'system_id' => $this->systemId
             ]);
-            throw new \Exception('JWT Error: ' . $e->getMessage());
-        }
-    }
-
-    public function uploadDocument($file, $email, $signaturePosition)
-    {
-        try {
-            $token = $this->getJwtToken();
-            if (!$token) {
-                throw new \Exception('Gagal mendapatkan JWT token');
-            }
-
-            $url = rtrim($this->baseUrl, '/') . '/digitalSignatureSession/1.0/sendDocument/v1';
-            
-            $base64Document = base64_encode(file_get_contents($file->path()));
-            
-            $payload = [
-                'param' => [
-                    'email' => $email,
-                    'payload' => [
-                        'fileName' => $file->getClientOriginalName(),
-                        'base64Document' => $base64Document,
-                        'signer' => [
-                            [
-                                'email' => $email,
-                                'isVisualSign' => 'YES',
-                                'lowerLeftX' => '556',
-                                'lowerLeftY' => '6',
-                                'upperRightX' => '589',
-                                'upperRightY' => '40',
-                                'page' => '1',
-                                'certificateLevel' => 'NOT_CERTIFIED',
-                                'varLocation' => 'Sigli',
-                                'varReason' => 'Signed',
-                                'teraImage' => 'QR-DETECSI'
-                            ]
-                        ]
-                    ],
-                    'systemId' => $this->systemId,
-                    'orderType' => 'INDIVIDUAL'
-                ]
-            ];
-
-            $response = Http::withHeaders([
-                'x-Gateway-APIKey' => $this->apiKey,
-                'Authorization' => 'Bearer ' . $token,
-                'Content-Type' => 'application/json'
-            ])->post($url, $payload);
-
-            $responseData = $response->json();
-            \Log::info('Upload Document Response:', $responseData);
-
-            if ($responseData['resultCode'] === 'SB001') {
-                throw new \Exception('Email ' . $email . ' belum terdaftar di Peruri. Silahkan daftarkan email terlebih dahulu.');
-            }
-
-            if (!isset($responseData['documentId'])) {
-                throw new \Exception('Gagal mendapatkan documentId dari Peruri: ' . ($responseData['resultDesc'] ?? 'Unknown error'));
-            }
-
-            return $responseData;
-        } catch (\Exception $e) {
-            \Log::error('Error dalam PeruriService::uploadDocument: ' . $e->getMessage());
             throw $e;
         }
     }
 
-    public function signDocument($documentId)
+    public function initiateSession($email)
     {
-        $token = $this->getJwtToken();
+        try {
+            // Get JWT Token first
+            $jwtToken = $this->getJwtToken();
 
-        $response = Http::withHeaders([
-            'x-Gateway-APIKey' => $this->apiKey,
-            'Authorization' => 'Bearer ' . $token,
-            'System-ID' => $this->systemId
-        ])->post($this->baseUrl . '/documents/' . $documentId . '/sign');
+            $url = $this->baseUrl . '/digitalSignatureSession/1.0/sessionInitiate/v1';
 
-        return $response->json();
+            // Setup request body
+            $requestBody = [
+                "param" => [
+                    "email" => $email,
+                    "systemId" => $this->systemId,
+                    "sendEmail" => "1",
+                    "sendSms" => "0",
+                    "sendWhatsapp" => "0"
+                ]
+            ];
+
+            Log::info('Initiating session with Peruri', [
+                'email' => $email,
+                'url' => $url
+            ]);
+
+            $response = Http::withHeaders([
+                'x-Gateway-APIKey' => $this->apiKey,
+                'Authorization' => 'Bearer ' . $jwtToken,
+                'Content-Type' => 'application/json'
+            ])->post($url, $requestBody);
+
+            Log::info('Peruri Session Initiate Response:', [
+                'status' => $response->status(),
+                'body' => $response->json()
+            ]);
+
+            if (!$response->successful()) {
+                throw new \Exception('Gagal melakukan inisiasi session: ' . $response->body());
+            }
+
+            $data = $response->json();
+
+            if (isset($data['resultCode']) && $data['resultCode'] === '0') {
+                return $data;
+            }
+
+            throw new \Exception('Invalid session initiate response: ' . json_encode($data));
+
+        } catch (\Exception $e) {
+            Log::error('Error in initiateSession:', [
+                'message' => $e->getMessage(),
+                'email' => $email
+            ]);
+            throw new \Exception('Error memanggil Session Initiate API: ' . $e->getMessage());
+        }
+    }
+
+    public function validateSession($email, $tokenSession, $otpCode)
+    {
+        try {
+            // Get JWT Token first
+            $jwtToken = $this->getJwtToken();
+
+            $url = $this->baseUrl . '/digitalSignatureSession/1.0/sessionValidation/v1';
+
+            // Setup request body
+            $requestBody = [
+                "param" => [
+                    "email" => $email,
+                    "systemId" => $this->systemId,
+                    "tokenSession" => $tokenSession,
+                    "otpCode" => $otpCode,
+                    "duration" => "1440" // 24 jam dalam menit
+                ]
+            ];
+
+            Log::info('Validating session with Peruri', [
+                'email' => $email,
+                'tokenSession' => $tokenSession,
+                'url' => $url
+            ]);
+
+            $response = Http::withHeaders([
+                'x-Gateway-APIKey' => $this->apiKey,
+                'Authorization' => 'Bearer ' . $jwtToken,
+                'Content-Type' => 'application/json'
+            ])->post($url, $requestBody);
+
+            Log::info('Peruri Session Validation Response:', [
+                'status' => $response->status(),
+                'body' => $response->json()
+            ]);
+
+            if (!$response->successful()) {
+                throw new \Exception('Gagal memvalidasi session: ' . $response->body());
+            }
+
+            $data = $response->json();
+
+            if (isset($data['resultCode']) && $data['resultCode'] === '0') {
+                return $data;
+            }
+
+            throw new \Exception('Invalid session validation response: ' . json_encode($data));
+
+        } catch (\Exception $e) {
+            Log::error('Error in validateSession:', [
+                'message' => $e->getMessage(),
+                'email' => $email,
+                'tokenSession' => $tokenSession
+            ]);
+            throw new \Exception('Error memanggil Session Validation API: ' . $e->getMessage());
+        }
+    }
+
+    public function signingSession($orderId)
+    {
+        try {
+            // Get JWT Token first
+            $jwtToken = $this->getJwtToken();
+
+            $url = $this->baseUrl . '/digitalSignatureSession/1.0/signingSession/v1';
+
+            // Setup request body
+            $requestBody = [
+                "param" => [
+                    "orderId" => $orderId
+                ]
+            ];
+
+            Log::info('Signing session with Peruri', [
+                'orderId' => $orderId,
+                'url' => $url
+            ]);
+
+            $response = Http::withHeaders([
+                'x-Gateway-APIKey' => $this->apiKey,
+                'Authorization' => 'Bearer ' . $jwtToken,
+                'Content-Type' => 'application/json'
+            ])->post($url, $requestBody);
+
+            Log::info('Peruri Signing Session Response:', [
+                'status' => $response->status(),
+                'body' => $response->json()
+            ]);
+
+            if (!$response->successful()) {
+                throw new \Exception('Gagal melakukan signing session: ' . $response->body());
+            }
+
+            $data = $response->json();
+
+            if (isset($data['resultCode']) && $data['resultCode'] === '0') {
+                return $data;
+            }
+
+            throw new \Exception('Invalid signing session response: ' . json_encode($data));
+
+        } catch (\Exception $e) {
+            Log::error('Error in signingSession:', [
+                'message' => $e->getMessage(),
+                'orderId' => $orderId
+            ]);
+            throw new \Exception('Error memanggil Signing Session API: ' . $e->getMessage());
+        }
     }
 
     public function downloadDocument($orderId)
     {
-        $token = $this->getJwtToken();
+        try {
+            // Get JWT Token first
+            $jwtToken = $this->getJwtToken();
 
-        $response = Http::withHeaders([
-            'x-Gateway-APIKey' => $this->apiKey,
-            'Authorization' => 'Bearer ' . $token,
-            'Content-Type' => 'application/json'
-        ])->post($this->baseUrl . '/digitalSignatureSession/1.0/downloadDocument/v1', [
-            'param' => [
+            $url = $this->baseUrl . '/digitalSignatureSession/1.0/downloadDocument/v1';
+
+            // Setup request body
+            $requestBody = [
+                "param" => [
+                    "orderId" => $orderId
+                ]
+            ];
+
+            Log::info('Downloading document from Peruri', [
+                'orderId' => $orderId,
+                'url' => $url
+            ]);
+
+            $response = Http::withHeaders([
+                'x-Gateway-APIKey' => $this->apiKey,
+                'Authorization' => 'Bearer ' . $jwtToken,
+                'Content-Type' => 'application/json'
+            ])->post($url, $requestBody);
+
+            Log::info('Peruri Download Document Response:', [
+                'status' => $response->status(),
+                'body' => $response->json()
+            ]);
+
+            if (!$response->successful()) {
+                throw new \Exception('Gagal mengunduh dokumen: ' . $response->body());
+            }
+
+            $data = $response->json();
+
+            if (isset($data['resultCode']) && $data['resultCode'] === '0') {
+                // Jika response berhasil, return base64 dokumen
+                if (isset($data['data']['base64Document'])) {
+                    return $data['data']['base64Document'];
+                }
+                throw new \Exception('Base64 document not found in response');
+            }
+
+            throw new \Exception('Invalid download document response: ' . json_encode($data));
+
+        } catch (\Exception $e) {
+            Log::error('Error in downloadDocument:', [
+                'message' => $e->getMessage(),
                 'orderId' => $orderId
-            ]
-        ]);
-
-        return $response->json();
+            ]);
+            throw new \Exception('Error memanggil Download Document API: ' . $e->getMessage());
+        }
     }
+}
 
-    public function createSigningSession($orderId)
-    {
-        $token = $this->getJwtToken();
-
-        $response = Http::withHeaders([
-            'x-Gateway-APIKey' => $this->apiKey,
-            'Authorization' => 'Bearer ' . $token,
-            'Content-Type' => 'application/json'
-        ])->post($this->baseUrl . '/digitalSignatureSession/1.0/signingSession/v1', [
-            'param' => [
-                'orderId' => $orderId
-            ]
-        ]);
-
-        return $response->json();
-    }
-
-    public function sendOTP($email)
-    {
-        $token = $this->getJwtToken();
-
-        $response = Http::withHeaders([
-            'x-Gateway-APIKey' => $this->apiKey,
-            'Authorization' => 'Bearer ' . $token,
-            'Content-Type' => 'application/json'
-        ])->post($this->baseUrl . '/digitalSignatureSession/1.0/sessionInitiate/v1', [
-            'param' => [
-                'email' => $email,
-                'systemId' => $this->systemId,
-                'sendEmail' => '1',
-                'sendSms' => '1',
-                'sendWhatsapp' => '1'
-            ]
-        ]);
-
-        return $response->json();
-    }
-
-    public function validateOTP($email, $tokenSession, $otpCode)
-    {
-        $token = $this->getJwtToken();
-
-        $response = Http::withHeaders([
-            'x-Gateway-APIKey' => $this->apiKey,
-            'Authorization' => 'Bearer ' . $token,
-            'Content-Type' => 'application/json'
-        ])->post($this->baseUrl . '/digitalSignatureSession/1.0/sessionValidation/v1', [
-            'param' => [
-                'email' => $email,
-                'systemId' => $this->systemId,
-                'tokenSession' => $tokenSession,
-                'otpCode' => $otpCode,
-                'duration' => 'in minutes'
-            ]
-        ]);
-
-        return $response->json();
-    }
-} 
+   

@@ -4,13 +4,13 @@ use Illuminate\Support\Facades\Route;
 use App\Http\Controllers\DocumentController;
 
 Route::get('/', function () {
-    return view('welcome');
+    return redirect()->route('documents.index');
 });
 
-Route::resource('documents', DocumentController::class);
-Route::post('documents/{document}/sign', [DocumentController::class, 'sign'])->name('documents.sign');
-Route::get('documents/{document}/download', [DocumentController::class, 'download'])->name('documents.download');
-Route::post('documents/{id}/sign', [DocumentController::class, 'sign'])->name('documents.sign');
-Route::get('documents/{id}/download', [DocumentController::class, 'download'])->name('documents.download');
-Route::post('documents/{id}/send-otp', [DocumentController::class, 'sendOTP'])->name('documents.sendOTP');
-Route::post('documents/{id}/validate-otp', [DocumentController::class, 'validateOTP'])->name('documents.validateOTP');
+Route::get('/documents', [DocumentController::class, 'index'])->name('documents.index');
+Route::post('/documents', [DocumentController::class, 'store'])->name('documents.store');
+Route::post('/documents/{id}/send-otp', [DocumentController::class, 'sendOTP'])->name('documents.sendOTP');
+Route::post('/documents/{id}/validate-otp', [DocumentController::class, 'validateOTP'])->name('documents.validateOTP');
+Route::post('/documents/{id}/sign-with-session', [DocumentController::class, 'signWithSession']);
+Route::get('/documents/{orderId}/download', [DocumentController::class, 'downloadSignedDocument']);
+Route::post('/documents/{id}/send', [DocumentController::class, 'sendToPeruri'])->name('documents.send');
