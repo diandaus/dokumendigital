@@ -30,10 +30,10 @@ class PeruriService
             // Setup signer configuration
             $signer = [
                 "isVisualSign" => "YES",
-                "lowerLeftX" => "567",
-                "lowerLeftY" => "0",
-                "upperRightX" => "612",
-                "upperRightY" => "44",
+                "lowerLeftX" => "522",
+                "lowerLeftY" => "770",
+                "upperRightX" => "555",
+                "upperRightY" => "803",
                 "page" => "1",
                 "certificateLevel" => "NOT_CERTIFIED",
                 "varLocation" => "Sigli",
@@ -146,7 +146,7 @@ class PeruriService
                     "email" => $email,
                     "systemId" => $this->systemId,
                     "sendEmail" => "1",
-                    "sendSms" => "0",
+                    "sendSms" => "1",
                     "sendWhatsapp" => "0"
                 ]
             ];
