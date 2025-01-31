@@ -205,7 +205,17 @@ class DocumentController extends Controller
 
             // Decode dan return PDF
             $pdfContent = base64_decode($response['data']['base64Document']);
-            $fileName = pathinfo($document->nama_dokumen, PATHINFO_FILENAME) . '_signed.pdf';
+            
+            // Gunakan nama dokumen asli dari database
+            $originalName = $document->nama_dokumen;
+            
+            // Hapus timestamp dari nama file jika ada (misal: 1234567890_dokumen.pdf -> dokumen.pdf)
+            if (preg_match('/^\d+_(.+)$/', $originalName, $matches)) {
+                $originalName = $matches[1];
+            }
+            
+            // Tambahkan _signed sebelum ekstensi
+            $fileName = pathinfo($originalName, PATHINFO_FILENAME) . '_signed.pdf';
 
             return response($pdfContent)
                 ->header('Content-Type', 'application/pdf')
