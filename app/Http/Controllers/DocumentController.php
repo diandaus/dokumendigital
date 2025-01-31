@@ -87,27 +87,26 @@ class DocumentController extends Controller
             // Proses satu per satu file yang diupload
             foreach($request->file('documents') as $file) {
                 try {
-                    $fileName = time() . '_' . $file->getClientOriginalName();
+                    // Ambil nama asli file tanpa timestamp
+                    $originalName = $file->getClientOriginalName();
+                    // Simpan dengan timestamp untuk unique identifier
+                    $fileName = time() . '_' . $originalName;
                     
-                    // Convert PDF ke base64
                     $base64Document = base64_encode(file_get_contents($file));
 
-                    // Kirim dokumen ke Peruri satu per satu
                     $response = $this->peruriService->sendDocument(
                         $pegawai->email,
-                        $fileName,
+                        $originalName, // Kirim nama asli ke Peruri
                         $base64Document
                     );
 
-                    // Jika berhasil terkirim ke Peruri, lanjut proses simpan
                     if (isset($response['resultCode']) && $response['resultCode'] === '0') {
                         $orderId = $response['data']['orderId'] ?? null;
 
                         if ($orderId) {
-                            // Simpan file dan data ke database
                             $file->storeAs('documents', $fileName);
                             DB::table('tracking_dokumen_ttd')->insert([
-                                'nama_dokumen' => $fileName,
+                                'nama_dokumen' => $fileName,  // Simpan dengan format: timestamp_namaasli.pdf
                                 'tgl_kirim' => now(),
                                 'order_id' => $orderId,
                                 'status_ttd' => 'Belum',
@@ -116,19 +115,14 @@ class DocumentController extends Controller
                                 'keterangan' => 'Dokumen telah di kirim ke Peruri'
                             ]);
                             $successCount++;
-                            
-                            // Lanjut ke file berikutnya
                             continue;
                         }
                     }
-                    
-                    // Jika gagal, tambah error counter
                     $errorCount++;
 
                 } catch (\Exception $e) {
                     $errorCount++;
                     \Log::error('Error processing file: ' . $e->getMessage());
-                    // Lanjut ke file berikutnya meskipun current file error
                     continue;
                 }
             }
@@ -154,34 +148,23 @@ class DocumentController extends Controller
 
     public function sign($id)
     {
-        $document = TrackingDokumenTtd::findOrFail($id);
-        
         try {
-            $response = $this->peruriService->createSigningSession($document->order_id);
+            $document = TrackingDokumenTtd::findOrFail($id);
             
-            // Update status dokumen
-            $document->update([
-                'status_ttd' => 'Proses',
-                'keterangan' => 'Sesi tanda tangan telah dibuat'
-            ]);
-
-            // Redirect ke URL signing session jika ada
-            if (isset($response['signingUrl'])) {
-                return redirect()->away($response['signingUrl']);
-            }
-
-            return redirect()->route('documents.index')
-                ->with('error', 'Gagal membuat sesi tanda tangan');
+            // Redirect ke method signDocument
+            return $this->signDocument($id);
+            
         } catch (\Exception $e) {
-            return redirect()->route('documents.index')
-                ->with('error', 'Terjadi kesalahan: ' . $e->getMessage());
+            return response()->json([
+                'success' => false,
+                'message' => 'Error: ' . $e->getMessage()
+            ], 500);
         }
     }
 
     public function download($orderId)
     {
         try {
-            // Cek dokumen di database
             $document = DB::table('tracking_dokumen_ttd')
                 ->where('order_id', $orderId)
                 ->first();
@@ -193,7 +176,6 @@ class DocumentController extends Controller
                 ], 404);
             }
 
-            // Download dari Peruri
             $response = $this->peruriService->downloadDocument($orderId);
             
             if (!isset($response['data']['base64Document'])) {
@@ -203,19 +185,20 @@ class DocumentController extends Controller
                 ], 500);
             }
 
-            // Decode dan return PDF
             $pdfContent = base64_decode($response['data']['base64Document']);
             
-            // Gunakan nama dokumen asli dari database
-            $originalName = $document->nama_dokumen;
-            
-            // Hapus timestamp dari nama file jika ada (misal: 1234567890_dokumen.pdf -> dokumen.pdf)
-            if (preg_match('/^\d+_(.+)$/', $originalName, $matches)) {
+            // Ambil nama asli dari nama_dokumen yang tersimpan (hapus timestamp)
+            $storedName = $document->nama_dokumen;
+            if (preg_match('/^\d+_(.+)$/', $storedName, $matches)) {
                 $originalName = $matches[1];
+            } else {
+                $originalName = $storedName;
             }
-            
-            // Tambahkan _signed sebelum ekstensi
-            $fileName = pathinfo($originalName, PATHINFO_FILENAME) . '_signed.pdf';
+
+            // Tambahkan _signed jika dokumen sudah ditandatangani
+            $fileName = ($document->status_ttd === 'Sudah') 
+                ? pathinfo($originalName, PATHINFO_FILENAME) . '_signed.pdf'
+                : $originalName;
 
             return response($pdfContent)
                 ->header('Content-Type', 'application/pdf')
@@ -229,201 +212,121 @@ class DocumentController extends Controller
         }
     }
 
-    public function sendOTP($id)
+    public function signDocument($id)
     {
         try {
-            // Ambil email dari tracking_dokumen_ttd
+            // Cek dokumen yang dipilih
             $document = DB::table('tracking_dokumen_ttd')
                 ->where('id_tracking', $id)
+                ->where('status_ttd', 'Belum')
                 ->first();
 
             if (!$document) {
                 return response()->json([
                     'success' => false,
-                    'message' => 'Dokumen tidak ditemukan'
-                ]);
+                    'message' => 'Dokumen tidak ditemukan atau sudah ditandatangani'
+                ], 404);
             }
 
-            // Kirim OTP ke email yang tersimpan
-            $response = $this->peruriService->initiateSession($document->email_ttd);
+            // Ambil email dokter dari pegawai
+            $email = DB::table('dokter')
+                ->join('pegawai', 'dokter.kd_dokter', '=', 'pegawai.nik')
+                ->where('dokter.kd_dokter', $document->kd_dokter)
+                ->value('pegawai.email');
 
-            // Simpan token session ke database
-            if (isset($response['data']['tokenSession'])) {
-                DB::table('tracking_tte_session')->insert([
-                    'email' => $document->email_ttd,
-                    'token_session' => $response['data']['tokenSession'],
-                    'status' => 'Aktif',
-                    'tgl_session' => date('Y-m-d H:i:s')
-                ]);
-
-                return response()->json([
-                    'success' => true,
-                    'message' => 'OTP berhasil dikirim'
-                ]);
-            }
-
-            return response()->json([
-                'success' => false,
-                'message' => 'Gagal mendapatkan token session'
-            ]);
-
-        } catch (\Exception $e) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Error: ' . $e->getMessage()
-            ]);
-        }
-    }
-
-    public function validateOTP($id, Request $request)
-    {
-        try {
-            $document = DB::table('tracking_dokumen_ttd')
-                ->where('id_tracking', $id)
-                ->first();
-
-            if (!$document) {
+            if (!$email) {
                 return response()->json([
                     'success' => false,
-                    'message' => 'Dokumen tidak ditemukan'
-                ]);
+                    'message' => 'Email dokter belum diset di data pegawai'
+                ], 400);
             }
 
-            // Ambil token session dari database
-            $session = DB::table('tracking_tte_session')
-                ->where('email', $document->email_ttd)
+            // Cek session aktif dalam 24 jam terakhir
+            $activeSession = DB::table('tracking_tte_session')
+                ->where('email', $email)
                 ->where('status', 'Aktif')
+                ->where('tgl_session', '>=', DB::raw('DATE_SUB(NOW(), INTERVAL 24 HOUR)'))
                 ->orderBy('tgl_session', 'desc')
                 ->first();
 
-            if (!$session) {
+            $needOTP = true;
+            $tokenSession = null;
+
+            if ($activeSession) {
+                // Gunakan session yang masih aktif
+                $tokenSession = $activeSession->token_session;
+                $needOTP = false;
+
+                // Lakukan signing session
+                $signingResponse = $this->peruriService->signingSession($document->order_id);
+                
+                if (isset($signingResponse['resultCode']) && $signingResponse['resultCode'] === '0') {
+                    // Update status dokumen
+                    DB::table('tracking_dokumen_ttd')
+                        ->where('order_id', $document->order_id)
+                        ->update([
+                            'status_ttd' => 'Sudah',
+                            'keterangan' => 'Dokumen telah ditandatangani'
+                        ]);
+
+                    return response()->json([
+                        'success' => true,
+                        'message' => 'Dokumen berhasil ditandatangani'
+                    ]);
+                }
+
                 return response()->json([
                     'success' => false,
-                    'message' => 'Session tidak ditemukan'
-                ]);
+                    'message' => 'Gagal signing session: ' . ($signingResponse['resultDesc'] ?? 'Unknown error')
+                ], 500);
             }
 
-            // Validasi OTP via Peruri
-            $response = $this->peruriService->validateSession(
-                $document->email_ttd,
-                $session->token_session,
-                $request->otp
-            );
+            // Jika tidak ada session aktif, kirim OTP baru
+            $response = $this->peruriService->initiateSession($email);
 
-            return response()->json([
-                'success' => true,
-                'message' => 'OTP berhasil divalidasi'
-            ]);
+            if (isset($response['resultCode']) && $response['resultCode'] === '0') {
+                $tokenSession = $response['data']['tokenSession'];
 
-        } catch (\Exception $e) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Error: ' . $e->getMessage()
-            ]);
-        }
-    }
+                // Nonaktifkan semua session lama
+                DB::table('tracking_tte_session')
+                    ->where('email', $email)
+                    ->where('status', 'Aktif')
+                    ->update(['status' => 'Expired']);
 
-    public function signWithSession($id)
-    {
-        try {
-            // Ambil data dokumen termasuk email penandatangan
-            $document = DB::table('tracking_dokumen_ttd')
-                ->where('id_tracking', $id)
-                ->first();
-
-            if (!$document) {
-                return response()->json([
-                    'success' => false,
-                    'message' => 'Dokumen tidak ditemukan'
+                // Simpan token session baru
+                $saved = DB::table('tracking_tte_session')->insert([
+                    'email' => $email,
+                    'token_session' => $tokenSession,
+                    'tgl_session' => now(),
+                    'status' => 'Aktif'
                 ]);
-            }
 
-            // Cek session aktif untuk email tersebut
-            $session = DB::table('tracking_tte_session')
-                ->where('email', $document->email_ttd)  // Menggunakan email dari tracking_dokumen_ttd
-                ->where('status', 'Aktif')
-                ->first();
+                if (!$saved) {
+                    return response()->json([
+                        'success' => false,
+                        'message' => 'Gagal menyimpan token session'
+                    ], 500);
+                }
 
-            if (!$session) {
-                // Jika tidak ada session aktif, minta OTP baru
                 return response()->json([
-                    'success' => false,
+                    'success' => true,
                     'needOTP' => true,
-                    'message' => 'Session expired, silahkan validasi OTP'
+                    'message' => 'OTP baru telah dikirim ke email: ' . $email,
+                    'tokenSession' => $tokenSession,
+                    'orderId' => $document->order_id
                 ]);
             }
 
-            // Tanda tangan dokumen menggunakan session yang aktif
-            $response = $this->peruriService->signingSession($document->order_id);
-
-            // Update status dokumen
-            DB::table('tracking_dokumen_ttd')
-                ->where('id_tracking', $id)
-                ->update([
-                    'status_ttd' => 'Sudah',
-                    'keterangan' => 'Dokumen telah ditandatangani'
-                ]);
-
             return response()->json([
-                'success' => true,
-                'message' => 'Dokumen berhasil ditandatangani'
-            ]);
+                'success' => false,
+                'message' => 'Gagal mengirim OTP: ' . ($response['resultDesc'] ?? 'Unknown error')
+            ], 500);
 
         } catch (\Exception $e) {
             return response()->json([
                 'success' => false,
                 'message' => 'Error: ' . $e->getMessage()
-            ]);
-        }
-    }
-
-    public function sendToPeruri($id)
-    {
-        try {
-            $document = DB::table('tracking_dokumen_ttd')
-                ->where('id_tracking', $id)
-                ->first();
-
-            if (!$document) {
-                return response()->json([
-                    'success' => false,
-                    'message' => 'Dokumen tidak ditemukan'
-                ]);
-            }
-
-            // Generate order ID
-            $orderId = 'DOC-' . date('YmdHis') . '-' . rand(1000, 9999);
-
-            // Ambil file PDF dan convert ke base64
-            $pdfPath = storage_path('app/documents/' . $document->nama_dokumen);
-            $base64Document = base64_encode(file_get_contents($pdfPath));
-
-            // Kirim dokumen ke Peruri
-            $response = $this->peruriService->sendDocument(
-                $document->email_ttd,
-                $document->nama_dokumen,
-                $base64Document
-            );
-
-            // Update status dan order_id di database
-            DB::table('tracking_dokumen_ttd')
-                ->where('id_tracking', $id)
-                ->update([
-                    'status_ttd' => 'Terkirim',
-                    'order_id' => $orderId,
-                    'tgl_kirim' => now()
-                ]);
-
-            return response()->json([
-                'success' => true,
-                'message' => 'Dokumen berhasil dikirim ke Peruri'
-            ]);
-
-        } catch (\Exception $e) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Error: ' . $e->getMessage()
-            ]);
+            ], 500);
         }
     }
 } 
