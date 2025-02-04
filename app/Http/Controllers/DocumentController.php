@@ -44,6 +44,11 @@ class DocumentController extends Controller
 
         $documents = $query->orderBy('tgl_kirim', 'desc')->get();
         
+        // Jika request AJAX, return partial view
+        if ($request->ajax()) {
+            return view('documents.table', compact('documents'))->render();
+        }
+        
         // Get unique emails for filter dropdown
         $emails = DB::table('tracking_dokumen_ttd')
             ->select('email_ttd')
@@ -53,10 +58,7 @@ class DocumentController extends Controller
         
         $pegawai = DB::table('pegawai')->get();
 
-        if ($request->ajax()) {
-            return view('documents.table', compact('documents'))->render();
-        }
-
+        // Return full view untuk request normal
         return view('documents.index', compact('documents', 'pegawai', 'emails'));
     }
 
@@ -180,18 +182,40 @@ class DocumentController extends Controller
 
             $response = $this->peruriService->downloadDocument($orderId);
             
-            if (!isset($response['data']['base64Document'])) {
+            // Tambah logging untuk response
+            \Log::info('Download response', [
+                'order_id' => $orderId,
+                'response_structure' => array_keys($response),
+                'has_base64' => isset($response['data']['base64Document'])
+            ]);
+
+            if (!isset($response['data']) || !isset($response['data']['base64Document'])) {
+                \Log::error('Invalid response structure', [
+                    'order_id' => $orderId,
+                    'response' => $response
+                ]);
                 return response()->json([
                     'success' => false,
-                    'message' => 'Gagal mengunduh dokumen'
+                    'message' => 'Format response tidak valid'
                 ], 500);
             }
 
             $pdfContent = base64_decode($response['data']['base64Document']);
             
-            // Debug: Cek nama file di database
+            // Validasi hasil decode
+            if ($pdfContent === false) {
+                \Log::error('Failed to decode base64', [
+                    'order_id' => $orderId
+                ]);
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Gagal decode dokumen'
+                ], 500);
+            }
+
+            // Perbaiki typo nama kolom
             \Log::info('Document name from DB', [
-                'nama_dokumen' => $document->namaS_dokumen,
+                'nama_dokumen' => $document->nama_dokumen,
                 'order_id' => $orderId
             ]);
 

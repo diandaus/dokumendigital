@@ -130,7 +130,7 @@
                         </tr>
                     </thead>
                     <tbody>
-                        @foreach($documents as $index => $doc)
+                        @foreach($documents->sortByDesc('tgl_kirim') as $index => $doc)
                             <tr>
                                 <td>{{ $index + 1 }}</td>
                                 <td>{{ $doc->nama_dokumen }}</td>
@@ -239,9 +239,9 @@
             .then(response => response.json())
             .then(data => {
                 if (data.success) {
-                    Swal.fire('Berhasil', data.message, 'success')
-                    .then(() => window.location.reload());
-                } else if (data.needOTP) {
+                    refreshTableContent();
+                    Swal.fire('Berhasil', data.message, 'success');
+                } else if (data.needOTP || data.message.includes('Invalid signing session')) {
                     sendOTP(id);
                 } else {
                     Swal.fire('Error', data.message, 'error');
@@ -279,6 +279,11 @@
                 confirmButtonText: 'Verifikasi',
                 cancelButtonText: 'Batal',
                 showLoaderOnConfirm: true,
+                footer: `
+                    <button type="button" class="btn btn-link" onclick="resendOTP(${id})">
+                        Kirim Ulang OTP
+                    </button>
+                `,
                 preConfirm: (otp) => {
                     return validateOTP(id, otp);
                 }
@@ -301,6 +306,44 @@
                 } else {
                     throw new Error(data.message);
                 }
+            });
+        }
+
+        function resendOTP(id) {
+            Swal.fire({
+                title: 'Memproses...',
+                text: 'Mengirim ulang OTP',
+                allowOutsideClick: false,
+                showConfirmButton: false,
+                didOpen: () => {
+                    Swal.showLoading();
+                }
+            });
+
+            fetch(`/documents/${id}/send-otp`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').content
+                }
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    Swal.fire({
+                        title: 'Berhasil',
+                        text: 'OTP baru telah dikirim ke email Anda',
+                        icon: 'success',
+                        confirmButtonText: 'OK'
+                    }).then(() => {
+                        promptOTP(id);
+                    });
+                } else {
+                    Swal.fire('Error', data.message, 'error');
+                }
+            })
+            .catch(error => {
+                Swal.fire('Error', 'Gagal mengirim ulang OTP', 'error');
             });
         }
 
@@ -438,24 +481,7 @@
         // Update script filter
         document.getElementById('filterForm').addEventListener('submit', async function(e) {
             e.preventDefault();
-            
-            const startDate = document.getElementById('start_date').value;
-            const endDate = document.getElementById('end_date').value;
-            const email = document.getElementById('email').value;
-            const status = document.getElementById('status').value;
-            
-            try {
-                const response = await fetch(
-                    `/documents?start_date=${startDate}&end_date=${endDate}&email=${email}&status=${status}`
-                );
-                const html = await response.text();
-                
-                document.querySelector('.card-body table').innerHTML = 
-                    html.split('<table class="table">')[1].split('</table>')[0];
-                
-            } catch (error) {
-                Swal.fire('Error', 'Gagal memuat data', 'error');
-            }
+            refreshTableContent();
         });
 
         function resetFilter() {
@@ -484,6 +510,46 @@
                 placeholder: 'Pilih Email'
             });
         });
+
+        // Tambahkan fungsi untuk refresh tabel
+        function refreshTableContent() {
+            // Tampilkan loading pada tabel
+            document.querySelector('.card-body table tbody').innerHTML = `
+                <tr>
+                    <td colspan="7" class="text-center">
+                        <div class="spinner-border text-primary" role="status">
+                            <span class="visually-hidden">Loading...</span>
+                        </div>
+                    </td>
+                </tr>
+            `;
+
+            // Ambil semua filter yang aktif
+            const formData = new FormData($('#filterForm')[0]);
+            
+            // Request AJAX dengan filter yang aktif
+            fetch(`/documents?${new URLSearchParams(formData)}`, {
+                headers: {
+                    'X-Requested-With': 'XMLHttpRequest'
+                }
+            })
+            .then(response => response.text())
+            .then(html => {
+                // Update konten tabel
+                document.querySelector('.card-body table').innerHTML = 
+                    html.split('<table class="table">')[1].split('</table>')[0];
+            })
+            .catch(error => {
+                console.error('Error:', error);
+                document.querySelector('.card-body table tbody').innerHTML = `
+                    <tr>
+                        <td colspan="7" class="text-center text-danger">
+                            Gagal memuat data. Silakan coba lagi.
+                        </td>
+                    </tr>
+                `;
+            });
+        }
     </script>
 </body>
 </html> 
