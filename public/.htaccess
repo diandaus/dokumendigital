@@ -5,6 +5,9 @@
 
     RewriteEngine On
 
+    # Increase request body limit to 100MB (100 * 1024 * 1024)
+    LimitRequestBody 104857600
+
     # Handle Authorization Header
     RewriteCond %{HTTP:Authorization} .
     RewriteRule .* - [E=HTTP_AUTHORIZATION:%{HTTP:Authorization}]
@@ -23,3 +26,9 @@
     RewriteCond %{REQUEST_FILENAME} !-f
     RewriteRule ^ index.php [L]
 </IfModule>
+
+php_value upload_max_filesize 50M
+php_value post_max_size 100M
+php_value max_execution_time 300
+php_value max_input_time 300
+php_value memory_limit 256M

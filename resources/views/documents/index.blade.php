@@ -59,6 +59,12 @@
             <button type="button" class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#uploadModal">
                 Upload Dokumen
             </button>
+            <a href="/documents/page-editor" class="btn btn-info text-white">
+                <i class="fas fa-edit"></i> Edit Halaman PDF
+            </a>
+            <a href="/documents/merge" class="btn btn-success">
+                <i class="fas fa-object-group"></i> Gabung PDF
+            </a>
         </div>
 
         @if(session('success'))
