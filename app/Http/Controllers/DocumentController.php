@@ -562,9 +562,155 @@ class DocumentController extends Controller
         }
     }
 
-    public function pageEditor()
+    public function pageEditor(Request $request)
     {
-        return view('documents.page-editor');
+        $noRawat = $request->get('no_rawat');
+        $path = $request->get('path', 'berkasrawat/pages/upload');
+
+        $pdfFiles = [];
+
+        // Jika ada parameter no_rawat, cari file PDF dari server
+        if ($noRawat) {
+            // Format no_rawat untuk nama file (ganti "/" dengan "_")
+            $noRawatFormatted = str_replace('/', '_', $noRawat);
+
+            // Base URL file dari server webapps
+            $webappsHost = env('WEBAPPS_HOST', '192.168.1.6');
+            $webappsPort = env('WEBAPPS_PORT', '80');
+            $webappsBase = env('WEBAPPS_BASE_PATH', 'webapps');
+
+            // Build base URL: http://192.168.1.6/webapps/berkasrawat/pages/upload/
+            $baseUrl = "http://{$webappsHost}:{$webappsPort}/{$webappsBase}/{$path}/";
+
+            // Urutan jenis berkas sesuai aplikasi Java
+            $jenisBerkas = [
+                'SEP_',
+                'Gruper_',
+                'Resume_',
+                'RiwayatPerawatan_',
+                'SKDP_',
+                'SPRI_',
+                'Awal_Medis_IGD_',
+                'Triase_',
+                'Lab_',
+                'Radiologi_',
+                'Billing_',
+                'LaporanOperasi_',
+                'LaporanAnastesi_'
+            ];
+
+            try {
+                // Loop untuk setiap jenis berkas
+                foreach ($jenisBerkas as $jenis) {
+                    // File dari bridging BPJS/Kemenkes tidak perlu signed
+                    if (in_array($jenis, ['SEP_', 'Gruper_', 'SKDP_', 'Billing_'])) {
+                        $fileName = $jenis . $noRawatFormatted . '.pdf';
+                    } else {
+                        $fileName = $jenis . $noRawatFormatted . '_signed.pdf';
+                    }
+
+                    $fileUrl = $baseUrl . $fileName;
+
+                    // Cek apakah file ada dengan HEAD request
+                    try {
+                        $headers = @get_headers($fileUrl);
+                        if ($headers && strpos($headers[0], '200') !== false) {
+                            // File exists - gunakan proxy URL
+                            $proxyUrl = url('/documents/proxy-pdf?url=' . urlencode($fileUrl));
+
+                            $pdfFiles[] = [
+                                'name' => $fileName,
+                                'url' => $proxyUrl,
+                                'originalUrl' => $fileUrl,
+                                'jenis' => rtrim($jenis, '_')
+                            ];
+                        }
+                    } catch (\Exception $e) {
+                        // File tidak ada, skip
+                        continue;
+                    }
+                }
+
+                \Log::info('PDF files loaded for no_rawat', [
+                    'no_rawat' => $noRawat,
+                    'formatted' => $noRawatFormatted,
+                    'count' => count($pdfFiles),
+                    'files' => array_column($pdfFiles, 'name')
+                ]);
+
+            } catch (\Exception $e) {
+                \Log::error('Error loading PDF files', [
+                    'no_rawat' => $noRawat,
+                    'error' => $e->getMessage()
+                ]);
+            }
+        }
+
+        return view('documents.page-editor', [
+            'noRawat' => $noRawat,
+            'path' => $path,
+            'pdfFiles' => $pdfFiles
+        ]);
+    }
+
+    public function proxyPdf(Request $request)
+    {
+        try {
+            $url = $request->get('url');
+
+            if (!$url) {
+                return response()->json(['error' => 'URL parameter required'], 400);
+            }
+
+            // Validasi bahwa URL dari server webapps yang valid
+            $webappsHost = env('WEBAPPS_HOST', '192.168.1.6');
+            $webappsPort = env('WEBAPPS_PORT', '80');
+
+            if (!str_contains($url, $webappsHost)) {
+                return response()->json(['error' => 'Invalid URL'], 403);
+            }
+
+            // Log untuk debugging
+            \Log::info('Proxying PDF request', ['url' => $url]);
+
+            // Gunakan streaming untuk menghindari memory limit
+            return response()->stream(function () use ($url) {
+                $context = stream_context_create([
+                    'http' => [
+                        'timeout' => 60,
+                        'ignore_errors' => true,
+                        'method' => 'GET',
+                        'header' => "Connection: close\r\n"
+                    ]
+                ]);
+
+                $handle = @fopen($url, 'rb', false, $context);
+
+                if ($handle === false) {
+                    \Log::error('Failed to open stream for PDF', ['url' => $url]);
+                    echo json_encode(['error' => 'Failed to fetch PDF']);
+                    return;
+                }
+
+                // Stream file dalam chunk untuk menghindari memory limit
+                while (!feof($handle)) {
+                    echo fread($handle, 8192); // 8KB chunks
+                    flush();
+                }
+
+                fclose($handle);
+            }, 200, [
+                'Content-Type' => 'application/pdf',
+                'Content-Disposition' => 'inline',
+                'Cache-Control' => 'public, max-age=3600',
+                'Access-Control-Allow-Origin' => '*',
+                'X-Accel-Buffering' => 'no' // Disable nginx buffering
+            ]);
+
+        } catch (\Exception $e) {
+            \Log::error('Error in proxyPdf', ['error' => $e->getMessage()]);
+            return response()->json(['error' => 'Server error: ' . $e->getMessage()], 500);
+        }
     }
 
     public function saveEditedPdf(Request $request)
@@ -1003,26 +1149,57 @@ class DocumentController extends Controller
                 $tempName = uniqid() . '_' . $index . '.pdf';
                 $path = storage_path('app/temp/' . $tempName);
                 $file->move(dirname($path), basename($path));
+
+                $fileSize = filesize($path);
+                \Log::info('Temp file created', [
+                    'index' => $index,
+                    'path' => $path,
+                    'size' => $fileSize,
+                    'size_kb' => round($fileSize / 1024, 2)
+                ]);
+
                 $tempFiles[] = $path;
             }
 
             // Gabungkan semua PDF menggunakan ghostscript
             $outputPath = storage_path('app/temp/' . uniqid() . '_merged.pdf');
-            $command = 'gs -dBATCH -dNOPAUSE -q -sDEVICE=pdfwrite -dPreserveAnnots=true ' .
+            $command = 'timeout 60 gs -dBATCH -dNOPAUSE -q -sDEVICE=pdfwrite -dPreserveAnnots=true ' .
                       '-dPreserveMarkedContent=true -dPrinted=false ' .
                       '-sOutputFile="' . $outputPath . '" ' .
                       implode(' ', array_map(function($file) {
                           return '"' . $file . '"';
                       }, $tempFiles));
 
+            \Log::info('Executing ghostscript command', [
+                'command' => $command,
+                'file_count' => count($tempFiles)
+            ]);
+
+            $startTime = microtime(true);
             exec($command, $output, $returnCode);
+            $duration = microtime(true) - $startTime;
+
+            \Log::info('Ghostscript execution completed', [
+                'return_code' => $returnCode,
+                'duration' => round($duration, 2) . 's',
+                'output' => implode("\n", $output)
+            ]);
 
             if ($returnCode !== 0) {
-                throw new Exception('Gagal menggabungkan PDF: ' . implode("\n", $output));
+                if ($returnCode === 124) {
+                    throw new Exception('Timeout: Proses merge PDF melebihi 60 detik');
+                }
+                throw new Exception('Gagal menggabungkan PDF (code: ' . $returnCode . '): ' . implode("\n", $output));
             }
 
             // Baca hasil gabungan
             $mergedContent = file_get_contents($outputPath);
+            $mergedSize = strlen($mergedContent);
+
+            \Log::info('Merge completed successfully', [
+                'output_size' => $mergedSize,
+                'output_size_mb' => round($mergedSize / 1024 / 1024, 2)
+            ]);
 
             // Cleanup temporary files
             foreach ($tempFiles as $file) {

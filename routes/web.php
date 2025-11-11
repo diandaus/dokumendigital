@@ -14,6 +14,7 @@ Route::post('/documents', [DocumentController::class, 'store'])->name('documents
 Route::get('/documents/merge', [DocumentController::class, 'mergePage']);
 Route::post('/documents/merge', [DocumentController::class, 'mergePdf']);
 Route::get('/documents/page-editor', [DocumentController::class, 'pageEditor']);
+Route::get('/documents/proxy-pdf', [DocumentController::class, 'proxyPdf']);
 Route::post('/documents/save-edited-pdf', [DocumentController::class, 'saveEditedPdf']);
 Route::post('/documents/merge-additional-pdf', [DocumentController::class, 'mergeAdditionalPdf']);
 Route::post('/documents/merge-multiple-pdfs', [DocumentController::class, 'mergeMultiplePdfs']);

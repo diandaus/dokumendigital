@@ -113,7 +113,17 @@
 <body>
     <div class="container mt-4">
         <div class="d-flex justify-content-between align-items-center mb-4">
-            <h2>Editor Halaman PDF</h2>
+            <div>
+                <h2>Editor Halaman PDF</h2>
+                @if($noRawat)
+                    <p class="text-muted mb-0">
+                        <i class="fas fa-hospital-user"></i> No. Rawat: <strong>{{ $noRawat }}</strong>
+                        @if(count($pdfFiles) > 0)
+                            <span class="badge bg-success ms-2">{{ count($pdfFiles) }} file PDF</span>
+                        @endif
+                    </p>
+                @endif
+            </div>
             <a href="/documents" class="btn btn-secondary">
                 <i class="fas fa-arrow-left"></i> Kembali
             </a>
@@ -177,6 +187,9 @@
         let pdfDoc = null;
         let pages = [];
         let currentFile = null;
+
+        // Data dari Laravel
+        const pdfFilesFromServer = @json($pdfFiles ?? []);
 
         const dragArea = document.getElementById('dragArea');
         const fileInput = document.getElementById('pdfInput');
@@ -782,6 +795,142 @@
                 Swal.fire('Error', error.message || 'Gagal menyimpan PDF', 'error');
             }
         }
+
+        // Auto-load PDF files dari server saat halaman dibuka
+        async function loadPDFsFromServer() {
+            if (!pdfFilesFromServer || pdfFilesFromServer.length === 0) {
+                return;
+            }
+
+            try {
+                Swal.fire({
+                    title: 'Memuat File PDF...',
+                    text: `Mengambil ${pdfFilesFromServer.length} file dari server`,
+                    allowOutsideClick: false,
+                    showConfirmButton: false,
+                    didOpen: () => {
+                        Swal.showLoading();
+                    }
+                });
+
+                // Download semua PDF dari server
+                const pdfBlobs = [];
+                for (const fileInfo of pdfFilesFromServer) {
+                    try {
+                        const response = await fetch(fileInfo.url);
+                        if (!response.ok) {
+                            console.error('Failed to load:', fileInfo.url);
+                            continue;
+                        }
+                        const blob = await response.blob();
+                        const file = new File([blob], fileInfo.name, { type: 'application/pdf' });
+                        pdfBlobs.push(file);
+                    } catch (error) {
+                        console.error('Error loading file:', fileInfo.url, error);
+                    }
+                }
+
+                if (pdfBlobs.length === 0) {
+                    throw new Error('Tidak ada file PDF yang berhasil dimuat');
+                }
+
+                // Jika hanya 1 file, langsung load
+                if (pdfBlobs.length === 1) {
+                    await loadPDF(pdfBlobs[0]);
+                    return;
+                }
+
+                // Jika multiple files, gabungkan dulu
+                Swal.fire({
+                    title: 'Menggabungkan PDF...',
+                    text: `Menggabungkan ${pdfBlobs.length} file PDF`,
+                    allowOutsideClick: false,
+                    showConfirmButton: false,
+                    didOpen: () => {
+                        Swal.showLoading();
+                    }
+                });
+
+                const formData = new FormData();
+                pdfBlobs.forEach(file => {
+                    formData.append('pdfs[]', file);
+                });
+
+                // Add timeout menggunakan AbortController
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => controller.abort(), 120000); // 2 minutes timeout
+
+                try {
+                    const response = await fetch('/documents/merge-multiple-pdfs', {
+                        method: 'POST',
+                        body: formData,
+                        headers: {
+                            'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').content
+                        },
+                        signal: controller.signal
+                    });
+
+                    clearTimeout(timeoutId);
+
+                    console.log('Merge response status:', response.status);
+                    console.log('Merge response headers:', {
+                        contentType: response.headers.get('content-type'),
+                        contentLength: response.headers.get('content-length')
+                    });
+
+                    const contentType = response.headers.get('content-type');
+
+                    // Check for JSON error response
+                    if (contentType && contentType.includes('application/json')) {
+                        const result = await response.json();
+                        throw new Error(result.message || 'Gagal menggabungkan PDF');
+                    }
+
+                    if (!response.ok) {
+                        const text = await response.text();
+                        console.error('Response text:', text);
+                        throw new Error('HTTP Error ' + response.status + ': ' + text.substring(0, 200));
+                    }
+
+                    // Get blob (regardless of content-type header)
+                    const blob = await response.blob();
+                    console.log('Merged blob size:', blob.size, 'bytes');
+
+                    if (blob.size < 1000) {
+                        throw new Error('File hasil merge terlalu kecil (' + blob.size + ' bytes), kemungkinan error');
+                    }
+
+                    const mergedFile = new File([blob], 'merged-pdfs.pdf', { type: 'application/pdf' });
+
+                    Swal.fire({
+                        icon: 'success',
+                        title: 'Berhasil!',
+                        text: `${pdfBlobs.length} file PDF berhasil digabungkan`,
+                        timer: 2000
+                    });
+
+                    await loadPDF(mergedFile);
+
+                } catch (fetchError) {
+                    clearTimeout(timeoutId);
+                    if (fetchError.name === 'AbortError') {
+                        throw new Error('Timeout: Proses merge memakan waktu lebih dari 2 menit');
+                    }
+                    throw fetchError;
+                }
+
+            } catch (error) {
+                console.error('Error loading PDFs from server:', error);
+                Swal.fire('Error', 'Gagal memuat file PDF: ' + error.message, 'error');
+            }
+        }
+
+        // Jalankan auto-load saat halaman selesai dimuat
+        window.addEventListener('DOMContentLoaded', () => {
+            if (pdfFilesFromServer && pdfFilesFromServer.length > 0) {
+                loadPDFsFromServer();
+            }
+        });
     </script>
 </body>
 </html>
